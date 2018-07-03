@@ -1,0 +1,36 @@
+# Makefile for Marshall McDonnell's Laptop (ASUS) and Workstation (Dell) 
+
+SHELL = /bin/sh
+.IGNORE:
+
+# System-specific settings
+
+FC = mpif90 
+FCFLAGS = -O3 -g
+CC = mpicc
+CCFLAGS = -O3 -g -Wno-write-strings $(MACROS)
+CXX = mpic++
+CXXFLAGS = -O3 -g -Wno-write-strings -std=c++11
+LD = mpic++
+#LDFLAGS = -Wl,-rpath=/data/apps/fftw/3.3.4/lib
+LAMMPSPATH=$(HOME)/software/lammps
+USRINC = -I$(LAMMPSPATH)/src 
+SYSLIB= -L$(LAMMPSPATH)/src
+
+# Link Rule
+
+$(EXE):     $(OBJ)
+	@echo $(USRLIB)
+	$(LD) $(LDFLAGS) $(OBJ) $(SYSLIB) $(USRLIB) -o $(EXE) 
+
+.f.o:
+	$(FC) $(FCFLAGS) $(USRINC) -c $<
+
+.c.o:
+	$(CC) $(CCFLAGS) $(USRINC) -c $<
+
+.cpp.o:
+	$(CXX) $(CXXFLAGS) $(USRINC) -c $<
+
+# Indvidual dependencies
+$(OBJ):     $(INC)
