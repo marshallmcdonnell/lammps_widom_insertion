@@ -62,6 +62,68 @@ double fRand(double fMin, double fMax)
 
 using namespace LAMMPS_NS;
 
+void init(int narg, char **arg, int& lammps, LAMMPS *&lmp) {
+  // setup MPI and various communicators
+  // driver runs on all procs in MPI_COMM_WORLD
+  // comm_lammps only has 1st P procs (could be all or any subset)
+
+  MPI_Init(&narg,&arg);
+
+  if (narg != 3) {
+    printf("Syntax: mpirun -n P widomCC P in.lammps\n");
+    exit(1);
+  }
+
+  int me,nprocs;
+  MPI_Comm_rank(MPI_COMM_WORLD,&me);
+  MPI_Comm_size(MPI_COMM_WORLD,&nprocs);
+
+  int nprocs_lammps = atoi(arg[1]);
+  if (nprocs_lammps > nprocs) {
+    if (me == 0)
+      printf("ERROR: LAMMPS cannot use more procs than available\n");
+    MPI_Abort(MPI_COMM_WORLD,1);
+  }
+
+  if (me < nprocs_lammps) lammps = 1;
+  else lammps = MPI_UNDEFINED;
+  MPI_Comm comm_lammps;
+  MPI_Comm_split(MPI_COMM_WORLD,lammps,0,&comm_lammps);
+  
+  // open LAMMPS input script
+
+  FILE *fp;
+  if (me == 0) {
+    fp = fopen(arg[2],"r");
+    if (fp == NULL) {
+      printf("ERROR: Could not open LAMMPS input script\n");
+      MPI_Abort(MPI_COMM_WORLD,1);
+    }
+  }
+
+  // run the input script thru LAMMPS one line at a time until end-of-file
+  // driver proc 0 reads a line, Bcasts it to all procs
+  // (could just send it to proc 0 of comm_lammps and let it Bcast)
+  // all LAMMPS procs call input->one() on the line
+  
+  if (lammps == 1) lmp = new LAMMPS(0,NULL,comm_lammps);
+
+  int n;
+  char line[1024];
+  while (1) {
+    if (me == 0) {
+      if (fgets(line,1024,fp) == NULL) n = 0;
+      else n = strlen(line) + 1;
+      if (n == 0) fclose(fp);
+    }
+    MPI_Bcast(&n,1,MPI_INT,0,MPI_COMM_WORLD);
+    if (n == 0) break;
+    MPI_Bcast(line,n,MPI_CHAR,0,MPI_COMM_WORLD);
+    if (lammps == 1) lmp->input->one(line);
+  }
+}
+
+
 double energy_full(void *ptr)
 {
   LAMMPS *lmp = (LAMMPS *) ptr;
@@ -122,272 +184,202 @@ double energy_full(void *ptr)
 
 int main(int narg, char **arg)
 {
-  // setup MPI and various communicators
-  // driver runs on all procs in MPI_COMM_WORLD
-  // comm_lammps only has 1st P procs (could be all or any subset)
+  // Initialization of lammps
+  int lammps;
+  LAMMPS *lmp;
 
-  MPI_Init(&narg,&arg);
+  init(narg, arg, lammps, lmp);
 
-  if (narg != 3) {
-    printf("Syntax: mpirun -n P widomCC P in.lammps\n");
+  if (lammps != 1) {
+    printf("ERROR: LAMMPS failed to initialize\n");
     exit(1);
   }
 
-  int me,nprocs;
+  int me;
   MPI_Comm_rank(MPI_COMM_WORLD,&me);
-  MPI_Comm_size(MPI_COMM_WORLD,&nprocs);
 
-  int nprocs_lammps = atoi(arg[1]);
-  if (nprocs_lammps > nprocs) {
-    if (me == 0)
-      printf("ERROR: LAMMPS cannot use more procs than available\n");
-    MPI_Abort(MPI_COMM_WORLD,1);
+  lmp->input->one("run 0");
+
+  double xlo = *( (double*) lammps_extract_global(lmp,"boxxlo") );
+  double ylo = *( (double*) lammps_extract_global(lmp,"boxylo") );
+  double zlo = *( (double*) lammps_extract_global(lmp,"boxzlo") );
+  double xhi = *( (double*) lammps_extract_global(lmp,"boxxhi") );
+  double yhi = *( (double*) lammps_extract_global(lmp,"boxyhi") );
+  double zhi = *( (double*) lammps_extract_global(lmp,"boxzhi") );
+
+  double x, y, z;
+  x = fRand( xlo, xhi );
+  y = fRand( ylo, yhi );
+  z = fRand( zlo, zhi );
+
+  // Get initial number of atoms
+  int natoms_old = static_cast<int> (lmp->atom->natoms);
+
+  // Setup add atom command
+  char add_command[216];
+  sprintf(add_command, "create_atoms 1 single %f %f %f units box", x, y, z);
+
+  // Setup delete atom command
+  char delete_command[216];
+  sprintf(delete_command, "delete_atoms group test_particle");
+
+  // Add atom
+  lmp->input->one(add_command);
+  int natoms_new = static_cast<int> (lmp->atom->natoms);
+
+  // Get original N system group and test particle N+1 system group
+  char group_original_command[216];
+  sprintf(group_original_command, "group original_system id %d:%d", 1, natoms_old);
+  lmp->input->one(group_original_command);
+  char group_test_particle_command[216];
+  sprintf(group_test_particle_command, "group test_particle id %d:%d", natoms_old+1, natoms_new);
+  lmp->input->one(group_test_particle_command);  
+
+  // Delete atom to reset before loop
+  lmp->input->one(delete_command); 
+
+  double energy;
+  energy = energy_full(lmp);
+
+  // Gather xyz and check gather + scatter
+  double *r = new double[3*natoms_old];
+  lammps_gather_atoms(lmp,"x",1,3,r);
+  lammps_scatter_atoms(lmp,"x",1,3,r);
+
+  // Open trajectory file 
+  std::ifstream file;
+  file.open( "dump.all.lammpstrj" );
+  if( !file.is_open() ) {
+    printf("Unable to open file.\n");
+    exit(1);
   }
 
-  int lammps;
-  if (me < nprocs_lammps) lammps = 1;
-  else lammps = MPI_UNDEFINED;
-  MPI_Comm comm_lammps;
-  MPI_Comm_split(MPI_COMM_WORLD,lammps,0,&comm_lammps);
-  
-  // open LAMMPS input script
+  // Initialize variables
+  std::string element;
+  int id, atype;
+  double rsq, f, eij;
+  double wtest, wtest_sq;
+  double expE_kbT;
+  double beta_mu, stdev_beta_mu;
+  int nsamples = 0;
 
-  FILE *fp;
+
+  // Setup beta term
+  double T = 1.0;
+  double kb; 
+  kb = static_cast<double> (lmp->force->boltz);
+  double beta = 1.0 / ( kb * T );
+
+  // Setup output file
+  std::ofstream outfile( "out.file" );
+  OutputWidom output;
   if (me == 0) {
-    fp = fopen(arg[2],"r");
-    if (fp == NULL) {
-      printf("ERROR: Could not open LAMMPS input script\n");
-      MPI_Abort(MPI_COMM_WORLD,1);
-    }
+    output.header(outfile);
+    output.header(std::cout);
   }
 
-  // run the input script thru LAMMPS one line at a time until end-of-file
-  // driver proc 0 reads a line, Bcasts it to all procs
-  // (could just send it to proc 0 of comm_lammps and let it Bcast)
-  // all LAMMPS procs call input->one() on the line
-  
-  LAMMPS *lmp;
-  if (lammps == 1) lmp = new LAMMPS(0,NULL,comm_lammps);
+  // initialize random seed
+  srand(3987);
 
-  int n;
-  char line[1024];
-  while (1) {
-    if (me == 0) {
-      if (fgets(line,1024,fp) == NULL) n = 0;
-      else n = strlen(line) + 1;
-      if (n == 0) fclose(fp);
-    }
-    MPI_Bcast(&n,1,MPI_INT,0,MPI_COMM_WORLD);
-    if (n == 0) break;
-    MPI_Bcast(line,n,MPI_CHAR,0,MPI_COMM_WORLD);
-    if (lammps == 1) lmp->input->one(line);
-  }
+  // Setup reader
+  ReadDump *rd = new ReadDump(lmp);
+  int timestep = 0;
+  int read_dump_narg = 13;
+  char **read_dump_args = new char*[read_dump_narg];
+  read_dump_args[0] = (char *) "dump.all.lammpstrj";
+  read_dump_args[1] = 0;
+  read_dump_args[2] = (char *) "x";
+  read_dump_args[3] = (char *) "y";
+  read_dump_args[4] = (char *) "z";
+  read_dump_args[5] = (char *) "scaled";
+  read_dump_args[6] = (char *) "yes";
+  read_dump_args[7] = (char *) "box";
+  read_dump_args[8] = (char *) "yes";
+  read_dump_args[9] = (char *) "replace";
+  read_dump_args[10] = (char *) "yes";
+  read_dump_args[11] = (char *) "format";
+  read_dump_args[12] = (char *) "native";
+  rd->store_files(1,&read_dump_args[0]);
+  int nremain = read_dump_narg - 2;
+  if (nremain)
+    nremain = rd->fields_and_keywords(nremain,&read_dump_args[read_dump_narg-nremain]);
+  else nremain = rd->fields_and_keywords(0,NULL);
+  if (nremain) rd->setup_reader(nremain,&read_dump_args[read_dump_narg-nremain]);
+  else rd->setup_reader(0,NULL);
 
-  // run 10 more steps
-  // get coords from LAMMPS
-  // change coords of 1st atom
-  // put coords back into LAMMPS
-  // run a single step with changed coords
+  // Turn off screen
+  lmp->screen = NULL;
 
-  if (lammps == 1) {
+  // Loop over snapshots of trajectory file
+  int nstep = 0;
+  std::string line;
+  while( 1 ) {
 
-    lmp->input->one("run 10");
-
-    double *bbox = new double[3];
-
-    double xlo = *( (double*) lammps_extract_global(lmp,"boxxlo") );
-    double ylo = *( (double*) lammps_extract_global(lmp,"boxylo") );
-    double zlo = *( (double*) lammps_extract_global(lmp,"boxzlo") );
-    double xhi = *( (double*) lammps_extract_global(lmp,"boxxhi") );
-    double yhi = *( (double*) lammps_extract_global(lmp,"boxyhi") );
-    double zhi = *( (double*) lammps_extract_global(lmp,"boxzhi") );
-
-    bbox[0] = xhi - xlo;
-    bbox[1] = yhi - ylo;
-    bbox[2] = zhi - zlo;
-
-    if (me == 0) {
-      std::cout << "x: " << xlo << " " << xhi << std::endl;
-      std::cout << "y: " << ylo << " " << yhi << std::endl;
-      std::cout << "z: " << zlo << " " << zhi << std::endl;
-    }
-
-    double x, y, z;
-    x = fRand( xlo, xhi );
-    y = fRand( ylo, yhi );
-    z = fRand( zlo, zhi );
-
-    // Get initial number of atoms
-    int natoms_old = static_cast<int> (lmp->atom->natoms);
-
-    // Setup add atom command
-    char add_command[216];
-    sprintf(add_command, "create_atoms 1 single %f %f %f units box", x, y, z);
-
-    // Setup delete atom command
-    char delete_command[216];
-    sprintf(delete_command, "delete_atoms group test_particle");
-
-    // Add atom
-    lmp->input->one(add_command);
-    int natoms_new = static_cast<int> (lmp->atom->natoms);
-
-    // Get original N system group and test particle N+1 system group
-    char group_original_command[216];
-    sprintf(group_original_command, "group original_system id %d:%d", 1, natoms_old);
-    lmp->input->one(group_original_command);
-    char group_test_particle_command[216];
-    sprintf(group_test_particle_command, "group test_particle id %d:%d", natoms_old+1, natoms_new);
-    lmp->input->one(group_test_particle_command);  
-
-    // Delete atom to reset before loop
-    lmp->input->one(delete_command); 
-
-    double energy;
-    energy = energy_full(lmp);
-
-    // Gather xyz and check gather + scatter
-    double *r = new double[3*natoms_old];
-    lammps_gather_atoms(lmp,"x",1,3,r);
-    lammps_scatter_atoms(lmp,"x",1,3,r);
-
-    // Open trajectory file 
-    std::ifstream file;
-    file.open( "dump.all.lammpstrj" );
-    if( !file.is_open() ) {
-      printf("Unable to open file.\n");
-      exit(1);
-    }
-
-    // Initialize variables
-    std::string element;
-    int id, atype;
-    double rsq, f, eij;
-    double wtest, wtest_sq;
-    double expE_kbT;
-    double beta_mu, stdev_beta_mu;
-    int nsamples = 0;
-
-
-    // Setup beta term
-    double T = 1.0;
-    double kb; 
-    kb = static_cast<double> (lmp->force->boltz);
-    double beta = 1.0 / ( kb * T );
-
-    // Setup output file
-    std::ofstream outfile( "out.file" );
-    OutputWidom output;
-    if (me == 0) {
-      output.header(outfile);
-      output.header(std::cout);
-    }
-
-    // initialize random seed
-    srand(3987);
-
-    // Setup reader
-    ReadDump *rd = new ReadDump(lmp);
-    int timestep = 0;
-    int narg = 13;
-    char **read_dump_args = new char*[narg];
-    read_dump_args[0] = (char *) "dump.all.lammpstrj";
-    read_dump_args[1] = 0;
-    read_dump_args[2] = (char *) "x";
-    read_dump_args[3] = (char *) "y";
-    read_dump_args[4] = (char *) "z";
-    read_dump_args[5] = (char *) "scaled";
-    read_dump_args[6] = (char *) "yes";
-    read_dump_args[7] = (char *) "box";
-    read_dump_args[8] = (char *) "yes";
-    read_dump_args[9] = (char *) "replace";
-    read_dump_args[10] = (char *) "yes";
-    read_dump_args[11] = (char *) "format";
-    read_dump_args[12] = (char *) "native";
-    rd->store_files(1,&read_dump_args[0]);
-    int nremain = narg - 2;
-    if (nremain)
-      nremain = rd->fields_and_keywords(nremain,&read_dump_args[narg-nremain]);
-    else nremain = rd->fields_and_keywords(0,NULL);
-    if (nremain) rd->setup_reader(nremain,&read_dump_args[narg-nremain]);
-    else rd->setup_reader(0,NULL);
-
-    // Turn off screen
-    lmp->screen = NULL;
-
-    // Loop over snapshots of trajectory file
-    int nstep = 0;
-    std::string line;
-    while( 1 ) {
-
-      // Read in nextsnapshot
-      bigint ntimestep = rd->seek(nstep,1);
-      if (ntimestep < 0)
-        break;
-      rd->header(1);
-      lmp->update->reset_timestep(nstep);
-      rd->atoms();
+    // Read in nextsnapshot
+    bigint ntimestep = rd->seek(nstep,1);
+    if (ntimestep < 0)
+      break;
+    rd->header(1);
+    lmp->update->reset_timestep(nstep);
+    rd->atoms();
       
-      // get initial pe for N system to get diff from N+1 system
-      double initial_energy;
-      initial_energy = energy_full(lmp);
+    // get initial pe for N system to get diff from N+1 system
+    double initial_energy;
+    initial_energy = energy_full(lmp);
 
-      // initialize energy sum for insertion
-      int ninserts = 10000;
-      wtest    = 0.0;
-      wtest_sq = 0.0;
+    // initialize energy sum for insertion
+    int ninserts = 10000;
+    wtest    = 0.0;
+    wtest_sq = 0.0;
       
-      // Peform test particle insertion loop
-      double new_energy, delta_energy;
-      for( int insert = 0; insert < ninserts; insert++ ) {
+    // Peform test particle insertion loop
+    double new_energy, delta_energy;
+    for( int insert = 0; insert < ninserts; insert++ ) {
 
-        // get random point for COM of test particle
-        x = fRand(xlo, xhi);
-        y = fRand(ylo, yhi);
-        z = fRand(zlo, zhi);
+      // get random point for COM of test particle
+      x = fRand(xlo, xhi);
+      y = fRand(ylo, yhi);
+      z = fRand(zlo, zhi);
 
-        // Add test particle
-        sprintf(add_command, "create_atoms 1 single %f %f %f units box", x, y, z);
-        lmp->input->one(add_command);
+      // Add test particle
+      sprintf(add_command, "create_atoms 1 single %f %f %f units box", x, y, z);
+      lmp->input->one(add_command);
 
-        // Get energy diff from N -> N+1 system
-        new_energy = energy_full(lmp);
-        delta_energy = new_energy - initial_energy;
+      // Get energy diff from N -> N+1 system
+      new_energy = energy_full(lmp);
+      delta_energy = new_energy - initial_energy;
 
-        // collect energy sum for insertion
-        expE_kbT  = exp( -1.0 * beta * delta_energy);
-        wtest    += expE_kbT;
-        wtest_sq += expE_kbT * expE_kbT;
+      // collect energy sum for insertion
+      expE_kbT  = exp( -1.0 * beta * delta_energy);
+      wtest    += expE_kbT;
+      wtest_sq += expE_kbT * expE_kbT;
 
-        // Delete one atom again
-        lmp->input->one(group_test_particle_command);   
-        lmp->input->one(delete_command);
+      // Delete one atom again
+      lmp->input->one(group_test_particle_command);   
+      lmp->input->one(delete_command);
 
-      }
-
-      // collect chemical potential & stats
-      beta_mu = -1.0 * log( wtest / (double) ninserts );
-      stdev_beta_mu = ( wtest_sq - wtest )  / (double) ninserts;
-      stdev_beta_mu = sqrt( stdev_beta_mu ) / wtest;
-
-      nsamples++;
-
-      if (me == 0) {
-        output.add_line( outfile, nsamples, beta, beta_mu, stdev_beta_mu );
-        output.add_line( std::cout, nsamples, beta, beta_mu, stdev_beta_mu );
-      }
-
-      // Increment nstep 
-      nstep++;
     }
 
+    // collect chemical potential & stats
+    beta_mu = -1.0 * log( wtest / (double) ninserts );
+    stdev_beta_mu = ( wtest_sq - wtest )  / (double) ninserts;
+    stdev_beta_mu = sqrt( stdev_beta_mu ) / wtest;
 
-    delete [] r;
-    delete [] bbox;
-    //if( tail_flag )
-    file.close();
+    nsamples++;
 
+    if (me == 0) {
+      output.add_line( outfile, nsamples, beta, beta_mu, stdev_beta_mu );
+      output.add_line( std::cout, nsamples, beta, beta_mu, stdev_beta_mu );
+    }
+
+    // Increment nstep 
+    nstep++;
   }
+
+
+  delete [] r;
+
+  file.close();
 
   if (lammps == 1) delete lmp;
 
