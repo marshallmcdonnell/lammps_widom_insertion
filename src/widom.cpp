@@ -82,7 +82,6 @@ using namespace LAMMPS_NS;
 double energy_full(void *ptr)
 {
   LAMMPS *lmp = (LAMMPS *) ptr;
-  int imolecule;
 
   if (lmp->domain->triclinic) lmp->domain->x2lamda(lmp->atom->nlocal);
   lmp->domain->pbc();
@@ -263,7 +262,6 @@ int main(int narg, char **arg)
 
     double energy;
     energy = energy_full(lmp);
-    printf("ENERGY: %f\n", energy);
 
     // Gather xyz and check gather + scatter
     double *r = new double[3*natoms_old];
@@ -316,18 +314,22 @@ int main(int narg, char **arg)
     // Setup reader
     ReadDump *rd = new ReadDump(lmp);
     int timestep = 0;
-    std::vector<std::string> read_dump_string {"dump.all.lammpstrj", "0", 
-                                             "x", "y", "z", 
-                                             "scaled", "yes",
-                                             "box", "yes",
-                                             "replace", "yes",
-                                             "format", "native"};
-    char **read_dump_args = (char**)calloc(13, sizeof(char*));
-    for (int i = 0; i < read_dump_string.size(); i++ )
-        read_dump_args[i] = (char *)read_dump_string[i].c_str();
-
+    int narg = 13;
+    char **read_dump_args = new char*[narg];
+    read_dump_args[0] = (char *) "dump.all.lammpstrj";
+    read_dump_args[1] = 0;
+    read_dump_args[2] = (char *) "x";
+    read_dump_args[3] = (char *) "y";
+    read_dump_args[4] = (char *) "z";
+    read_dump_args[5] = (char *) "scaled";
+    read_dump_args[6] = (char *) "yes";
+    read_dump_args[7] = (char *) "box";
+    read_dump_args[8] = (char *) "yes";
+    read_dump_args[9] = (char *) "replace";
+    read_dump_args[10] = (char *) "yes";
+    read_dump_args[11] = (char *) "format";
+    read_dump_args[12] = (char *) "native";
     rd->store_files(1,&read_dump_args[0]);
-    int narg = read_dump_string.size();
     int nremain = narg - 2;
     if (nremain)
       nremain = rd->fields_and_keywords(nremain,&read_dump_args[narg-nremain]);
