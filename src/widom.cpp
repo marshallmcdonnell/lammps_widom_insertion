@@ -60,23 +60,6 @@ double fRand(double fMin, double fMax)
     return fMin + f * (fMax - fMin);
 };
 
-int count_words( std::string s ) {
-    int word_count(0);
-    std::stringstream ss(s);
-    std::string word;
-    while( ss >> word ) ++word_count;
-    return word_count;
-}
-
-std::vector<char*> vector_str2cstr(std::vector<std::string> strings) {
-    std::vector<char*> cstrings;
-    cstrings.reserve(strings.size());
-
-    for(size_t i = 0; i < strings.size(); ++i)
-        cstrings.push_back(const_cast<char*>(strings[i].c_str()));
-    return cstrings;
-}
-
 using namespace LAMMPS_NS;
 
 double energy_full(void *ptr)
@@ -276,14 +259,6 @@ int main(int narg, char **arg)
       exit(1);
     }
 
-    // Pick either XYZ or LAMMPS default atom-style
-    bool xyz = false;
-    bool lammps = true;
-    if( xyz && lammps ) {
-      std::cout << "ERROR: Pick either xyz or lammps, not both." << std::endl; 
-      exit(1);
-    }
-    
     // Initialize variables
     std::string element;
     int id, atype;
