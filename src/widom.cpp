@@ -91,7 +91,7 @@ double energy_full(void *ptr)
   lmp->comm->borders();
   if (lmp->domain->triclinic) lmp->domain->lamda2x(lmp->atom->nlocal+lmp->atom->nghost);
   if (lmp->modify->n_pre_neighbor) lmp->modify->pre_neighbor();
-  lmp->neighbor->build();
+  lmp->neighbor->build(1); // 1 is topology flag and the default throughout lammps
   int eflag = 1;
   int vflag = 0;
   // clear forces so they don't accumulate over multiple
