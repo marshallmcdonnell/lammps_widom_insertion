@@ -323,6 +323,10 @@ int main(int narg, char **arg)
     lmp->update->reset_timestep(nstep);
     rd->atoms();
       
+    // Post-read, Pre-energy setup
+    if (lmp->force->kspace) lmp->force->kspace->qsum_qsq();
+    if (lmp->force->pair->tail_flag) lmp->force->pair->reinit();
+
     // get initial pe for N system to get diff from N+1 system
     double energy_before;
     energy_before = energy_full(lmp);
@@ -340,11 +344,18 @@ int main(int narg, char **arg)
       coord[0] = fRand(xlo, xhi);
       coord[1] = fRand(ylo, yhi);
       coord[2] = fRand(zlo, zhi);
-      
+
       // Add test particle
       sprintf(add_command, "create_atoms 1 single %f %f %f units box",
               coord[0], coord[1], coord[2] );
       lmp->input->one(add_command);
+
+      // Post-insertion, Pre-energy setup
+      if (lmp->domain->triclinic) lmp->domain->x2lamda(lmp->atom->nlocal);
+      lmp->comm->borders();
+      if (lmp->domain->triclinic) lmp->domain->lamda2x(lmp->atom->nlocal+lmp->atom->nghost);
+      if (lmp->force->kspace) lmp->force->kspace->qsum_qsq();
+      if (lmp->force->pair->tail_flag) lmp->force->pair->reinit();
 
       // Get energy diff from N -> N+1 system
       energy_after = energy_full(lmp);
@@ -358,6 +369,10 @@ int main(int narg, char **arg)
       // Delete one atom again
       lmp->input->one(group_test_particle_command);   
       lmp->input->one(delete_command);
+
+      // Post-deletion breakdown
+      if (lmp->force->kspace) lmp->force->kspace->qsum_qsq();
+      if (lmp->force->pair->tail_flag) lmp->force->pair->reinit();
 
     }
 
