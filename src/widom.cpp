@@ -69,11 +69,11 @@ void init(int narg, char **arg, int& lammps, LAMMPS *&lmp) {
 
   MPI_Init(&narg,&arg);
 
-  if (narg != 3) {
-    printf("Syntax: mpirun -n P widomCC P in.lammps\n");
+  if (narg != 6) {
+    printf("Syntax: mpirun -n P widomCC P in.lammps ninserts seed temp\n");
     exit(1);
   }
-
+  
   int me,nprocs;
   MPI_Comm_rank(MPI_COMM_WORLD,&me);
   MPI_Comm_size(MPI_COMM_WORLD,&nprocs);
@@ -170,7 +170,7 @@ double energy_full(void *ptr)
   //   will contribute to total MC energy via pe->compute_scalar()
 
   // Setup pe compute (c_pe)
-  class Compute *c_pe;
+  Compute *c_pe;
   char *id_pe = (char *) "thermo_pe";
   int ipe = lmp->modify->find_compute(id_pe);
   c_pe = lmp->modify->compute[ipe];
@@ -207,17 +207,18 @@ int main(int narg, char **arg)
   double yhi = *( (double*) lammps_extract_global(lmp,"boxyhi") );
   double zhi = *( (double*) lammps_extract_global(lmp,"boxzhi") );
 
-  double x, y, z;
-  x = fRand( xlo, xhi );
-  y = fRand( ylo, yhi );
-  z = fRand( zlo, zhi );
+  double coord[3];
+  coord[0] = fRand( xlo, xhi );
+  coord[1] = fRand( ylo, yhi );
+  coord[2] = fRand( zlo, zhi );
 
   // Get initial number of atoms
   int natoms_old = static_cast<int> (lmp->atom->natoms);
 
   // Setup add atom command
   char add_command[216];
-  sprintf(add_command, "create_atoms 1 single %f %f %f units box", x, y, z);
+  sprintf(add_command, "create_atoms 1 single %f %f %f units box", 
+          coord[0], coord[1], coord[2] );
 
   // Setup delete atom command
   char delete_command[216];
@@ -258,17 +259,16 @@ int main(int narg, char **arg)
   std::string element;
   int id, atype;
   double rsq, f, eij;
-  double wtest, wtest_sq;
+  double wtest, wtest_sq, wtest_sum, wtest_sq_sum, var_wtest;
   double expE_kbT;
   double beta_mu, stdev_beta_mu;
   int nsamples = 0;
 
 
   // Setup beta term
-  double T = 1.0;
+  double T = atof(arg[5]);
   double kb; 
-  kb = static_cast<double> (lmp->force->boltz);
-  double beta = 1.0 / ( kb * T );
+  double beta = 1.0 / ( lmp->force->boltz * T );
 
   // Setup output file
   std::ofstream outfile( "out.file" );
@@ -279,7 +279,7 @@ int main(int narg, char **arg)
   }
 
   // initialize random seed
-  srand(3987);
+  srand(atoi(arg[4]));
 
   // Setup reader
   ReadDump *rd = new ReadDump(lmp);
@@ -312,11 +312,11 @@ int main(int narg, char **arg)
 
   // Loop over snapshots of trajectory file
   int nstep = 0;
-  std::string line;
   while( 1 ) {
 
     // Read in nextsnapshot
-    bigint ntimestep = rd->seek(nstep,1);
+    bigint ntimestep = rd->seek(nstep,0); // 0 => find first step >= nstep
+    nstep = ntimestep; // if we didn't find exactly nstep, this sets it to what was found
     if (ntimestep < 0)
       break;
     rd->header(1);
@@ -324,30 +324,31 @@ int main(int narg, char **arg)
     rd->atoms();
       
     // get initial pe for N system to get diff from N+1 system
-    double initial_energy;
-    initial_energy = energy_full(lmp);
+    double energy_before;
+    energy_before = energy_full(lmp);
 
     // initialize energy sum for insertion
-    int ninserts = 10000;
+    int ninserts = atoi(arg[3]);
     wtest    = 0.0;
     wtest_sq = 0.0;
       
     // Peform test particle insertion loop
-    double new_energy, delta_energy;
+    double energy_after, delta_energy;
     for( int insert = 0; insert < ninserts; insert++ ) {
 
       // get random point for COM of test particle
-      x = fRand(xlo, xhi);
-      y = fRand(ylo, yhi);
-      z = fRand(zlo, zhi);
-
+      coord[0] = fRand(xlo, xhi);
+      coord[1] = fRand(ylo, yhi);
+      coord[2] = fRand(zlo, zhi);
+      
       // Add test particle
-      sprintf(add_command, "create_atoms 1 single %f %f %f units box", x, y, z);
+      sprintf(add_command, "create_atoms 1 single %f %f %f units box",
+              coord[0], coord[1], coord[2] );
       lmp->input->one(add_command);
 
       // Get energy diff from N -> N+1 system
-      new_energy = energy_full(lmp);
-      delta_energy = new_energy - initial_energy;
+      energy_after = energy_full(lmp);
+      delta_energy = energy_after - energy_before;
 
       // collect energy sum for insertion
       expE_kbT  = exp( -1.0 * beta * delta_energy);
@@ -362,8 +363,11 @@ int main(int narg, char **arg)
 
     // collect chemical potential & stats
     beta_mu = -1.0 * log( wtest / (double) ninserts );
-    stdev_beta_mu = ( wtest_sq - wtest )  / (double) ninserts;
-    stdev_beta_mu = sqrt( stdev_beta_mu ) / wtest;
+
+    wtest_sum = wtest / (double) ninserts;
+    wtest_sq_sum = wtest_sq / (double) ninserts;
+    var_wtest = wtest_sq_sum - wtest_sum * wtest_sum;
+    stdev_beta_mu = sqrt( var_wtest ) / wtest;
 
     nsamples++;
 
@@ -374,6 +378,7 @@ int main(int narg, char **arg)
 
     // Increment nstep 
     nstep++;
+
   }
 
 
