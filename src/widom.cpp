@@ -69,8 +69,8 @@ void init(int narg, char **arg, int& lammps, LAMMPS *&lmp) {
 
   MPI_Init(&narg,&arg);
 
-  if (narg != 6) {
-    printf("Syntax: mpirun -n P widomCC P in.lammps ninserts seed temp\n");
+  if (narg != 7) {
+    printf("Syntax: mpirun -n P widomCC P in.lammps trajectory_file ninserts seed temp\n");
     exit(1);
   }
   
@@ -249,9 +249,9 @@ int main(int narg, char **arg)
 
   // Open trajectory file 
   std::ifstream file;
-  file.open( "dump.all.lammpstrj" );
+  file.open( arg[3] );
   if( !file.is_open() ) {
-    printf("Unable to open file.\n");
+    printf("Unable to open trajectory file.\n");
     exit(1);
   }
 
@@ -266,7 +266,7 @@ int main(int narg, char **arg)
 
 
   // Setup beta term
-  double T = atof(arg[5]);
+  double T = atof(arg[6]);
   double kb; 
   double beta = 1.0 / ( lmp->force->boltz * T );
 
@@ -279,7 +279,7 @@ int main(int narg, char **arg)
   }
 
   // initialize random seed
-  srand(atoi(arg[4]));
+  srand(atoi(arg[5]));
 
   // Setup reader
   ReadDump *rd = new ReadDump(lmp);
@@ -332,7 +332,7 @@ int main(int narg, char **arg)
     energy_before = energy_full(lmp);
 
     // initialize energy sum for insertion
-    int ninserts = atoi(arg[3]);
+    int ninserts = atoi(arg[4]);
     wtest    = 0.0;
     wtest_sq = 0.0;
       
