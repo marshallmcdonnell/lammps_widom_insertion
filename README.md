@@ -1,6 +1,6 @@
 ## Widom particle insertion using [LAMMPS](https://lammps.sandia.gov/) as a [shared library](https://lammps.sandia.gov/doc/Python_shlib.html)
 
-This is for Lennard-Jones particles only (no poly-atomic systems, no other potenials).
+This is for single monatomic particles only (no poly-atomic systems).
 
 This is only a proof-of-concept project.
 
